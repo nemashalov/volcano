@@ -93,6 +93,11 @@ func (alloc *Action) Execute(ssn *framework.Session) {
 	}
 
 	klog.V(3).Infof("Try to allocate resource to %d Queues", len(jobsMap))
+	if klog.V(4).Enabled() {
+		for queueID, jobs := range jobsMap {
+			klog.V(4).Infof("Queue %s: %d jobs ready for allocation", queueID, jobs.Len())
+		}
+	}
 
 	pendingTasks := map[api.JobID]*util.PriorityQueue{}
 
@@ -133,6 +138,10 @@ func (alloc *Action) Execute(ssn *framework.Session) {
 		}
 
 		klog.V(3).Infof("Try to allocate resource to Jobs in Queue <%s>", queue.Name)
+		if klog.V(4).Enabled() {
+			klog.V(4).Infof("Queue <%s> status: allocated=%v, weight=%v, reclaimable=%v",
+				queue.Name, queue.Queue.Status.Allocated, queue.Queue.Spec.Weight, queue.Reclaimable())
+		}
 
 		jobs, found := jobsMap[queue.UID]
 		if !found || jobs.Empty() {
@@ -166,6 +175,14 @@ func (alloc *Action) Execute(ssn *framework.Session) {
 
 		klog.V(3).Infof("Try to allocate resource to %d tasks of Job <%v/%v>",
 			tasks.Len(), job.Namespace, job.Name)
+		if klog.V(4).Enabled() {
+			klog.V(4).Infof("Job <%v/%v> status: pending=%d, running=%d, allocated=%d, minMember=%d",
+				job.Namespace, job.Name,
+				len(job.TaskStatusIndex[api.Pending]),
+				len(job.TaskStatusIndex[api.Running]),
+				len(job.TaskStatusIndex[api.Allocated]),
+				job.PodGroup.Spec.MinMember)
+		}
 
 		stmt := framework.NewStatement(ssn)
 		ph := util.NewPredicateHelper()
@@ -178,6 +195,9 @@ func (alloc *Action) Execute(ssn *framework.Session) {
 			}
 
 			klog.V(3).Infof("There are <%d> nodes for Job <%v/%v>", len(ssn.Nodes), job.Namespace, job.Name)
+			if klog.V(4).Enabled() {
+				klog.V(4).Infof("Task <%s/%s> resource request: %v", task.Namespace, task.Name, task.InitResreq)
+			}
 
 			if err := ssn.PrePredicateFn(task); err != nil {
 				klog.V(3).Infof("PrePredicate for task %s/%s failed for: %v", task.Namespace, task.Name, err)
@@ -190,17 +210,36 @@ func (alloc *Action) Execute(ssn *framework.Session) {
 			}
 
 			predicateNodes, fitErrors := ph.PredicateNodes(task, allNodes, predicateFn, true)
+			klog.V(3).Infof("Predicate results for task <%s/%s>: %d nodes passed, %d nodes failed",
+				task.Namespace, task.Name, len(predicateNodes), len(allNodes)-len(predicateNodes))
 			if len(predicateNodes) == 0 {
+				if klog.V(4).Enabled() {
+					klog.V(4).Infof("Task <%s/%s> cannot be scheduled: no nodes passed predicates. Failed nodes: %d",
+						task.Namespace, task.Name, len(allNodes))
+				}
 				job.NodesFitErrors[task.UID] = fitErrors
 				break
 			}
 
 			var candidateNodes []*api.NodeInfo
 			for _, n := range predicateNodes {
-				if task.InitResreq.LessEqual(n.Idle, api.Zero) || task.InitResreq.LessEqual(n.FutureIdle(), api.Zero) {
+				hasIdle := task.InitResreq.LessEqual(n.Idle, api.Zero)
+				hasFutureIdle := task.InitResreq.LessEqual(n.FutureIdle(), api.Zero)
+				if hasIdle || hasFutureIdle {
 					candidateNodes = append(candidateNodes, n)
+					if klog.V(4).Enabled() {
+						if hasIdle {
+							klog.V(4).Infof("Node <%s> has idle resources: idle=%v, requested=%v",
+								n.Name, n.Idle, task.InitResreq)
+						} else {
+							klog.V(4).Infof("Node <%s> has future idle resources: futureIdle=%v, requested=%v",
+								n.Name, n.FutureIdle(), task.InitResreq)
+						}
+					}
 				}
 			}
+			klog.V(3).Infof("Found %d candidate nodes with sufficient resources for task <%s/%s>",
+				len(candidateNodes), task.Namespace, task.Name)
 
 			var node *api.NodeInfo
 			switch {
@@ -209,40 +248,61 @@ func (alloc *Action) Execute(ssn *framework.Session) {
 			case len(candidateNodes) == 1: // If only one node after predicate, just use it.
 				node = candidateNodes[0]
 			case len(candidateNodes) > 1: // If more than one node after predicate, using "the best" one
+				klog.V(4).Infof("Prioritizing %d candidate nodes for task <%s/%s>",
+					len(candidateNodes), task.Namespace, task.Name)
 				nodeScores := util.PrioritizeNodes(task, candidateNodes, ssn.BatchNodeOrderFn, ssn.NodeOrderMapFn, ssn.NodeOrderReduceFn)
 
 				node = ssn.BestNodeFn(task, nodeScores)
 				if node == nil {
 					node = util.SelectBestNode(nodeScores)
 				}
+				if klog.V(4).Enabled() && node != nil {
+					// Find the score for the selected node
+					for score, nodes := range nodeScores {
+						for _, n := range nodes {
+							if n.Name == node.Name {
+								klog.V(4).Infof("Selected node <%s> with score %.2f for task <%s/%s>",
+									node.Name, score, task.Namespace, task.Name)
+								break
+							}
+						}
+					}
+				}
 			}
 
 			// Allocate idle resource to the task.
 			if task.InitResreq.LessEqual(node.Idle, api.Zero) {
-				klog.V(3).Infof("Binding Task <%v/%v> to node <%v>",
-					task.Namespace, task.Name, node.Name)
+				klog.V(3).Infof("Binding Task <%v/%v> to node <%v> (using idle resources: idle=%v, requested=%v)",
+					task.Namespace, task.Name, node.Name, node.Idle, task.InitResreq)
 				if err := stmt.Allocate(task, node); err != nil {
 					klog.Errorf("Failed to bind Task %v on %v in Session %v, err: %v",
 						task.UID, node.Name, ssn.UID, err)
 				} else {
+					klog.V(3).Infof("Successfully allocated Task <%v/%v> to node <%v>",
+						task.Namespace, task.Name, node.Name)
 					metrics.UpdateE2eSchedulingDurationByJob(job.Name, string(job.Queue), job.Namespace, metrics.Duration(job.CreationTimestamp.Time))
 					metrics.UpdateE2eSchedulingLastTimeByJob(job.Name, string(job.Queue), job.Namespace, time.Now())
 				}
 			} else {
-				klog.V(3).Infof("Predicates failed in allocate for task <%s/%s> on node <%s> with limited resources",
-					task.Namespace, task.Name, node.Name)
+				klog.V(3).Infof("Task <%s/%s> cannot use idle resources on node <%s> (idle=%v < requested=%v), checking future idle",
+					task.Namespace, task.Name, node.Name, node.Idle, task.InitResreq)
 
 				// Allocate releasing resource to the task if any.
 				if task.InitResreq.LessEqual(node.FutureIdle(), api.Zero) {
-					klog.V(3).Infof("Pipelining Task <%v/%v> to node <%v> for <%v> on <%v>",
-						task.Namespace, task.Name, node.Name, task.InitResreq, node.Releasing)
+					klog.V(3).Infof("Pipelining Task <%v/%v> to node <%v> (requested=%v, releasing=%v, futureIdle=%v)",
+						task.Namespace, task.Name, node.Name, task.InitResreq, node.Releasing, node.FutureIdle())
 					if err := stmt.Pipeline(task, node.Name); err != nil {
 						klog.Errorf("Failed to pipeline Task %v on %v in Session %v for %v.",
 							task.UID, node.Name, ssn.UID, err)
 					} else {
+						klog.V(3).Infof("Successfully pipelined Task <%v/%v> to node <%v>",
+							task.Namespace, task.Name, node.Name)
 						metrics.UpdateE2eSchedulingDurationByJob(job.Name, string(job.Queue), job.Namespace, metrics.Duration(job.CreationTimestamp.Time))
 						metrics.UpdateE2eSchedulingLastTimeByJob(job.Name, string(job.Queue), job.Namespace, time.Now())
 					}
+				} else {
+					klog.V(3).Infof("Task <%s/%s> cannot be scheduled on node <%s>: insufficient resources (requested=%v, idle=%v, futureIdle=%v)",
+						task.Namespace, task.Name, node.Name, task.InitResreq, node.Idle, node.FutureIdle())
 				}
 			}
 

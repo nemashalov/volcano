@@ -103,26 +103,75 @@ func PrioritizeNodes(task *api.TaskInfo, nodes []*api.NodeInfo, batchFn api.Batc
 	}
 
 	nodeScoreMap := map[string]float64{}
+	scoreBreakdown := map[string]map[string]float64{}
 	for _, node := range nodes {
 		// If no plugin is applied to this node, the default is 0.0
 		score := 0.0
-		if reduceScore, ok := reduceScores[node.Name]; ok {
-			score += reduceScore
+		reduceScore := 0.0
+		orderScore := 0.0
+		batchScore := 0.0
+		
+		if rs, ok := reduceScores[node.Name]; ok {
+			reduceScore = rs
+			score += rs
 		}
-		if orderScore, ok := nodeOrderScoreMap[node.Name]; ok {
-			score += orderScore
+		if os, ok := nodeOrderScoreMap[node.Name]; ok {
+			orderScore = os
+			score += os
 		}
-		if batchScore, ok := batchNodeScore[node.Name]; ok {
-			score += batchScore
+		if bs, ok := batchNodeScore[node.Name]; ok {
+			batchScore = bs
+			score += bs
 		}
 		nodeScores[score] = append(nodeScores[score], node)
 
+		// Always populate nodeScoreMap for logging
+		nodeScoreMap[node.Name] = score
 		if klog.V(5).Enabled() {
-			nodeScoreMap[node.Name] = score
+			scoreBreakdown[node.Name] = map[string]float64{
+				"reduce": reduceScore,
+				"order":  orderScore,
+				"batch":  batchScore,
+				"total":  score,
+			}
 		}
 	}
 
-	klog.V(5).Infof("Prioritize nodeScoreMap for task<%s/%s> is: %v", task.Namespace, task.Name, nodeScoreMap)
+	if klog.V(5).Enabled() {
+		klog.V(5).Infof("Prioritize nodeScoreMap for task<%s/%s>: %v", task.Namespace, task.Name, nodeScoreMap)
+		for nodeName, breakdown := range scoreBreakdown {
+			klog.V(5).Infof("Node <%s> score breakdown: reduce=%.2f, order=%.2f, batch=%.2f, total=%.2f",
+				nodeName, breakdown["reduce"], breakdown["order"], breakdown["batch"], breakdown["total"])
+		}
+	} else if klog.V(4).Enabled() {
+		// Log top 3 nodes at V(4)
+		var sortedNodes []struct {
+			name  string
+			score float64
+		}
+		for name, score := range nodeScoreMap {
+			sortedNodes = append(sortedNodes, struct {
+				name  string
+				score float64
+			}{name, score})
+		}
+		// Simple sort (bubble sort for small lists)
+		for i := 0; i < len(sortedNodes)-1; i++ {
+			for j := i + 1; j < len(sortedNodes); j++ {
+				if sortedNodes[i].score < sortedNodes[j].score {
+					sortedNodes[i], sortedNodes[j] = sortedNodes[j], sortedNodes[i]
+				}
+			}
+		}
+		topN := 3
+		if len(sortedNodes) < topN {
+			topN = len(sortedNodes)
+		}
+		for i := 0; i < topN; i++ {
+			klog.V(4).Infof("Top node [%d] for task <%s/%s>: <%s> with score %.2f",
+				i+1, task.Namespace, task.Name, sortedNodes[i].name, sortedNodes[i].score)
+		}
+	}
 	return nodeScores
 }
 
