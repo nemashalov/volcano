@@ -99,9 +99,12 @@ func (pc *Scheduler) Run(stopCh <-chan struct{}) {
 }
 
 func (pc *Scheduler) runOnce() {
-	klog.V(4).Infof("Start scheduling ...")
+	klog.V(4).Infof("Start scheduling cycle ...")
 	scheduleStartTime := time.Now()
-	defer klog.V(4).Infof("End scheduling ...")
+	defer func() {
+		totalDuration := time.Since(scheduleStartTime)
+		klog.V(4).Infof("End scheduling cycle, total duration: %v", totalDuration)
+	}()
 
 	pc.mutex.Lock()
 	actions := pc.actions
@@ -111,19 +114,27 @@ func (pc *Scheduler) runOnce() {
 
 	//Load configmap to check which action is enabled.
 	conf.EnabledActionMap = make(map[string]bool)
+	actionNames := make([]string, 0, len(actions))
 	for _, action := range actions {
 		conf.EnabledActionMap[action.Name()] = true
+		actionNames = append(actionNames, action.Name())
 	}
+	klog.V(3).Infof("Scheduling cycle: executing %d actions in order: %v", len(actions), actionNames)
 
 	ssn := framework.OpenSession(pc.cache, plugins, configurations)
 	defer framework.CloseSession(ssn)
 
-	for _, action := range actions {
+	for i, action := range actions {
 		actionStartTime := time.Now()
+		klog.V(4).Infof("Executing action [%d/%d]: %s", i+1, len(actions), action.Name())
 		action.Execute(ssn)
+		actionDuration := time.Since(actionStartTime)
 		metrics.UpdateActionDuration(action.Name(), metrics.Duration(actionStartTime))
+		klog.V(3).Infof("Action %s completed in %v", action.Name(), actionDuration)
 	}
 	metrics.UpdateE2eDuration(metrics.Duration(scheduleStartTime))
+	totalDuration := time.Since(scheduleStartTime)
+	klog.V(3).Infof("Scheduling cycle completed: %d actions executed in %v", len(actions), totalDuration)
 }
 
 func (pc *Scheduler) loadSchedulerConf() {

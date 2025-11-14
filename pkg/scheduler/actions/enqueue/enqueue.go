@@ -77,6 +77,15 @@ func (enqueue *Action) Execute(ssn *framework.Session) {
 	}
 
 	klog.V(3).Infof("Try to enqueue PodGroup to %d Queues", len(jobsMap))
+	if klog.V(4).Enabled() {
+		totalPendingJobs := 0
+		for queueID, jobs := range jobsMap {
+			jobCount := jobs.Len()
+			totalPendingJobs += jobCount
+			klog.V(4).Infof("Queue %s: %d pending jobs waiting to be enqueued", queueID, jobCount)
+		}
+		klog.V(4).Infof("Total %d pending jobs across all queues", totalPendingJobs)
+	}
 
 	for {
 		if queues.Empty() {
@@ -93,9 +102,12 @@ func (enqueue *Action) Execute(ssn *framework.Session) {
 		job := jobs.Pop().(*api.JobInfo)
 
 		if job.PodGroup.Spec.MinResources == nil || ssn.JobEnqueueable(job) {
+			klog.V(3).Infof("Enqueuing Job <%s/%s> in Queue <%s>", job.Namespace, job.Name, queue.Name)
 			ssn.JobEnqueued(job)
 			job.PodGroup.Status.Phase = scheduling.PodGroupInqueue
 			ssn.Jobs[job.UID] = job
+		} else {
+			klog.V(4).Infof("Job <%s/%s> in Queue <%s> is not enqueueable, skipping", job.Namespace, job.Name, queue.Name)
 		}
 
 		// Added Queue back until no job in Queue.

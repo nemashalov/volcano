@@ -278,8 +278,9 @@ func preempt(
 				break
 			}
 			preemptee := victimsQueue.Pop().(*api.TaskInfo)
-			klog.V(3).Infof("Try to preempt Task <%s/%s> for Task <%s/%s>",
-				preemptee.Namespace, preemptee.Name, preemptor.Namespace, preemptor.Name)
+			klog.V(3).Infof("Try to preempt Task <%s/%s> (resources: %v) for Task <%s/%s> (requested: %v) on node <%s>",
+				preemptee.Namespace, preemptee.Name, preemptee.Resreq,
+				preemptor.Namespace, preemptor.Name, preemptor.InitResreq, node.Name)
 			if err := stmt.Evict(preemptee, "preempt"); err != nil {
 				klog.Errorf("Failed to preempt Task <%s/%s> for Task <%s/%s>: %v",
 					preemptee.Namespace, preemptee.Name, preemptor.Namespace, preemptor.Name, err)
@@ -289,8 +290,12 @@ func preempt(
 		}
 
 		metrics.RegisterPreemptionAttempts()
-		klog.V(3).Infof("Preempted <%v> for Task <%s/%s> requested <%v>.",
-			preempted, preemptor.Namespace, preemptor.Name, preemptor.InitResreq)
+		klog.V(3).Infof("Preempted <%v> from %d victims for Task <%s/%s> requested <%v> on node <%s>",
+			preempted, len(victims), preemptor.Namespace, preemptor.Name, preemptor.InitResreq, node.Name)
+		if klog.V(4).Enabled() {
+			klog.V(4).Infof("Node <%s> resource state after preemption: idle=%v, used=%v, releasing=%v, futureIdle=%v",
+				node.Name, node.Idle, node.Used, node.Releasing, node.FutureIdle())
+		}
 
 		// If preemptor's queue is overused, it means preemptor can not be allcated. So no need care about the node idle resourace
 		if !ssn.Overused(currentQueue) && preemptor.InitResreq.LessEqual(node.FutureIdle(), api.Zero) {

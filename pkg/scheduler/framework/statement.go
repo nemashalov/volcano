@@ -349,7 +349,24 @@ func (s *Statement) unallocate(task *api.TaskInfo) error {
 
 // Discard operation for evict, pipeline and allocate
 func (s *Statement) Discard() {
-	klog.V(3).Info("Discarding operations ...")
+	klog.V(3).Infof("Discarding %d operations ...", len(s.operations))
+	if klog.V(4).Enabled() {
+		evictCount := 0
+		pipelineCount := 0
+		allocateCount := 0
+		for _, op := range s.operations {
+			switch op.name {
+			case Evict:
+				evictCount++
+			case Pipeline:
+				pipelineCount++
+			case Allocate:
+				allocateCount++
+			}
+		}
+		klog.V(4).Infof("Discarding operations breakdown: evict=%d, pipeline=%d, allocate=%d",
+			evictCount, pipelineCount, allocateCount)
+	}
 	for i := len(s.operations) - 1; i >= 0; i-- {
 		op := s.operations[i]
 		op.task.GenerateLastTxContext()
@@ -357,41 +374,71 @@ func (s *Statement) Discard() {
 		case Evict:
 			err := s.unevict(op.task)
 			if err != nil {
-				klog.Errorf("Failed to unevict task: %s", err.Error())
+				klog.Errorf("Failed to unevict task <%s/%s>: %s", op.task.Namespace, op.task.Name, err.Error())
+			} else {
+				klog.V(4).Infof("Successfully unevicted task <%s/%s>", op.task.Namespace, op.task.Name)
 			}
 		case Pipeline:
 			err := s.unpipeline(op.task)
 			if err != nil {
-				klog.Errorf("Failed to unpipeline task: %s", err.Error())
+				klog.Errorf("Failed to unpipeline task <%s/%s>: %s", op.task.Namespace, op.task.Name, err.Error())
+			} else {
+				klog.V(4).Infof("Successfully unpipelined task <%s/%s>", op.task.Namespace, op.task.Name)
 			}
 		case Allocate:
 			err := s.unallocate(op.task)
 			if err != nil {
-				klog.Errorf("Failed to unallocate task: %s", err.Error())
+				klog.Errorf("Failed to unallocate task <%s/%s>: %s", op.task.Namespace, op.task.Name, err.Error())
+			} else {
+				klog.V(4).Infof("Successfully unallocated task <%s/%s>", op.task.Namespace, op.task.Name)
 			}
 		}
 	}
+	klog.V(3).Infof("Discarded %d operations", len(s.operations))
 }
 
 // Commit operation for evict and pipeline
 func (s *Statement) Commit() {
-	klog.V(3).Info("Committing operations ...")
+	klog.V(3).Infof("Committing %d operations ...", len(s.operations))
+	if klog.V(4).Enabled() {
+		evictCount := 0
+		pipelineCount := 0
+		allocateCount := 0
+		for _, op := range s.operations {
+			switch op.name {
+			case Evict:
+				evictCount++
+			case Pipeline:
+				pipelineCount++
+			case Allocate:
+				allocateCount++
+			}
+		}
+		klog.V(4).Infof("Operations breakdown: evict=%d, pipeline=%d, allocate=%d",
+			evictCount, pipelineCount, allocateCount)
+	}
 	for _, op := range s.operations {
 		op.task.ClearLastTxContext()
 		switch op.name {
 		case Evict:
 			err := s.evict(op.task, op.reason)
 			if err != nil {
-				klog.Errorf("Failed to evict task: %s", err.Error())
+				klog.Errorf("Failed to evict task <%s/%s>: %s", op.task.Namespace, op.task.Name, err.Error())
+			} else {
+				klog.V(4).Infof("Successfully evicted task <%s/%s>", op.task.Namespace, op.task.Name)
 			}
 		case Pipeline:
 			s.pipeline(op.task)
+			klog.V(4).Infof("Successfully pipelined task <%s/%s>", op.task.Namespace, op.task.Name)
 		case Allocate:
 			err := s.allocate(op.task)
 			if err != nil {
 				s.ssn.cache.RevertVolumes(op.task, op.task.PodVolumes)
-				klog.Errorf("Failed to allocate task: for %s", err.Error())
+				klog.Errorf("Failed to allocate task <%s/%s>: %s", op.task.Namespace, op.task.Name, err.Error())
+			} else {
+				klog.V(4).Infof("Successfully allocated task <%s/%s>", op.task.Namespace, op.task.Name)
 			}
 		}
 	}
+	klog.V(3).Infof("Committed %d operations", len(s.operations))
 }

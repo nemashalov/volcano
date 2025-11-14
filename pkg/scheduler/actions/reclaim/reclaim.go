@@ -179,8 +179,9 @@ func (ra *Action) Execute(ssn *framework.Session) {
 
 			// Reclaim victims for tasks.
 			for _, reclaimee := range victims {
-				klog.Errorf("Try to reclaim Task <%s/%s> for Tasks <%s/%s>",
-					reclaimee.Namespace, reclaimee.Name, task.Namespace, task.Name)
+				klog.V(3).Infof("Try to reclaim Task <%s/%s> (resources: %v) for Task <%s/%s> (requested: %v) on node <%s>",
+					reclaimee.Namespace, reclaimee.Name, reclaimee.Resreq,
+					task.Namespace, task.Name, task.InitResreq, n.Name)
 				if err := ssn.Evict(reclaimee, "reclaim"); err != nil {
 					klog.Errorf("Failed to reclaim Task <%s/%s> for Tasks <%s/%s>: %v",
 						reclaimee.Namespace, reclaimee.Name, task.Namespace, task.Name, err)
@@ -193,8 +194,12 @@ func (ra *Action) Execute(ssn *framework.Session) {
 				}
 			}
 
-			klog.V(3).Infof("Reclaimed <%v> for task <%s/%s> requested <%v>.",
-				reclaimed, task.Namespace, task.Name, task.InitResreq)
+			klog.V(3).Infof("Reclaimed <%v> for task <%s/%s> requested <%v> on node <%s>",
+				reclaimed, task.Namespace, task.Name, task.InitResreq, n.Name)
+			if klog.V(4).Enabled() {
+				klog.V(4).Infof("Node <%s> resource state after reclaim: idle=%v, used=%v, releasing=%v, futureIdle=%v",
+					n.Name, n.Idle, n.Used, n.Releasing, n.FutureIdle())
+			}
 
 			if task.InitResreq.LessEqual(reclaimed, api.Zero) {
 				if err := ssn.Pipeline(task, n.Name); err != nil {

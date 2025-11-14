@@ -73,6 +73,10 @@ func (ph *predicateHelper) PredicateNodes(task *api.TaskInfo, nodes []*api.NodeI
 		if _, err := fn(task, node); err != nil {
 			klog.V(3).Infof("Predicates failed for task <%s/%s> on node <%s>: %v",
 				task.Namespace, task.Name, node.Name, err)
+			if klog.V(4).Enabled() {
+				klog.V(4).Infof("Predicate failure details: task <%s/%s> requested %v, node <%s> idle=%v, used=%v, allocatable=%v",
+					task.Namespace, task.Name, task.InitResreq, node.Name, node.Idle, node.Used, node.Allocatable)
+			}
 			errorLock.Lock()
 			nodeErrorCache[node.Name] = err
 			ph.taskPredicateErrorCache[taskGroupid] = nodeErrorCache
@@ -97,6 +101,12 @@ func (ph *predicateHelper) PredicateNodes(task *api.TaskInfo, nodes []*api.NodeI
 	//processedNodes := int(numFoundNodes) + len(filteredNodesStatuses) + len(failedPredicateMap)
 	lastProcessedNodeIndex = (lastProcessedNodeIndex + int(processedNodes)) % allNodes
 	predicateNodes = predicateNodes[:numFoundNodes]
+	
+	if klog.V(4).Enabled() {
+		klog.V(4).Infof("Predicate summary for task <%s/%s>: processed %d nodes, found %d feasible nodes (target: %d)",
+			task.Namespace, task.Name, processedNodes, numFoundNodes, numNodesToFind)
+	}
+	
 	return predicateNodes, fe
 }
 

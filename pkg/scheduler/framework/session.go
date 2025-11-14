@@ -184,8 +184,28 @@ func openSession(cache cache.Cache) *Session {
 		ssn.TotalResource.Add(n.Allocatable)
 	}
 
-	klog.V(3).Infof("Open Session %v with <%d> Job and <%d> Queues",
-		ssn.UID, len(ssn.Jobs), len(ssn.Queues))
+	klog.V(3).Infof("Open Session %v with <%d> Jobs, <%d> Queues, <%d> Nodes, total cluster resources: %v",
+		ssn.UID, len(ssn.Jobs), len(ssn.Queues), len(ssn.Nodes), ssn.TotalResource)
+
+	// Log detailed session state at higher verbosity
+	if klog.V(4).Enabled() {
+		pendingTasks := 0
+		runningTasks := 0
+		allocatedTasks := 0
+		for _, job := range ssn.Jobs {
+			pendingTasks += len(job.TaskStatusIndex[api.Pending])
+			runningTasks += len(job.TaskStatusIndex[api.Running])
+			allocatedTasks += len(job.TaskStatusIndex[api.Allocated])
+		}
+		klog.V(4).Infof("Session %v task status: pending=%d, running=%d, allocated=%d",
+			ssn.UID, pendingTasks, runningTasks, allocatedTasks)
+
+		// Log queue details
+		for queueID, queue := range ssn.Queues {
+			klog.V(4).Infof("Queue %s: allocated=%v, weight=%v, reclaimable=%v",
+				queueID, queue.Queue.Status.Allocated, queue.Queue.Spec.Weight, queue.Reclaimable())
+		}
+	}
 
 	return ssn
 }
@@ -239,6 +259,19 @@ func closeSession(ssn *Session) {
 	ssn.TotalResource = nil
 
 	klog.V(3).Infof("Close Session %v", ssn.UID)
+	if klog.V(4).Enabled() {
+		// Log session summary before closing
+		pendingTasks := 0
+		runningTasks := 0
+		allocatedTasks := 0
+		for _, job := range ssn.Jobs {
+			pendingTasks += len(job.TaskStatusIndex[api.Pending])
+			runningTasks += len(job.TaskStatusIndex[api.Running])
+			allocatedTasks += len(job.TaskStatusIndex[api.Allocated])
+		}
+		klog.V(4).Infof("Session %v closing with: pending=%d, running=%d, allocated=%d tasks",
+			ssn.UID, pendingTasks, runningTasks, allocatedTasks)
+	}
 }
 
 func jobStatus(ssn *Session, jobInfo *api.JobInfo) scheduling.PodGroupStatus {
